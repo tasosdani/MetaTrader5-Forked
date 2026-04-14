@@ -36,4 +36,3 @@ RUN chmod +x /Metatrader/start.sh
 COPY /root /
 
 EXPOSE 3000 8001
-VOLUME /config
