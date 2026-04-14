@@ -4,6 +4,7 @@ set -euo pipefail
 mt5file='/config/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe'
 export WINEPREFIX='/config/.wine'
 export WINEDEBUG='-all'
+
 wine_executable="wine"
 metatrader_version="5.0.36"
 mt5server_port="${MT5_SERVER_PORT:-8001}"
@@ -19,7 +20,7 @@ show_message() {
 
 wait_for_path() {
   local path="$1"
-  local tries="${2:-30}"
+  local tries="${2:-60}"
   local i=0
   while [ ! -e "$path" ] && [ "$i" -lt "$tries" ]; do
     sleep 1
@@ -35,21 +36,14 @@ check_dependency() {
   fi
 }
 
-is_python_package_installed() {
-  python3 - <<PY >/dev/null 2>&1
-import importlib.util
-import sys
-pkg = "$1".split("==")[0].split(">=")[0].split("<")[0]
-sys.exit(0 if importlib.util.find_spec(pkg) else 1)
-PY
-}
-
 is_wine_python_ready() {
   $wine_executable python --version >/dev/null 2>&1
 }
 
 check_dependency "curl"
 check_dependency "$wine_executable"
+check_dependency "python3"
+check_dependency "ss"
 
 mkdir -p /config
 mkdir -p "$WINEPREFIX"
@@ -89,6 +83,7 @@ fi
 if [ -e "$mt5file" ]; then
   show_message "[4/7] Running MT5..."
   $wine_executable "$mt5file" $MT5_CMD_OPTIONS &
+  sleep 10
 else
   show_message "[4/7] MT5 still not installed. Cannot continue."
   exit 1
@@ -99,15 +94,32 @@ if ! is_wine_python_ready; then
   curl -L "$python_url" -o /tmp/python-installer.exe
   $wine_executable /tmp/python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 || true
   rm -f /tmp/python-installer.exe
+  sleep 10
   show_message "[5/7] Python install attempted."
 else
   show_message "[5/7] Python already available in Wine."
 fi
 
-show_message "[6/7] Installing Python libraries..."
+show_message "[6/7] Installing Python libraries in Wine..."
+
 $wine_executable python -m pip install --upgrade --no-cache-dir pip || true
-$wine_executable python -m pip install --no-cache-dir "MetaTrader5==$metatrader_version" || true
-$wine_executable python -m pip install --no-cache-dir "mt5linux==1.0.3" "rpyc==5.2.3" "plumbum==1.7.0" "pyparsing>=3.1,<4" python-dateutil || true
+
+# Remove potentially incompatible packages first
+$wine_executable python -m pip uninstall -y \
+  MetaTrader5 mt5linux numpy rpyc plumbum pyparsing \
+  python-dateutil pypiwin32 pywin32 six || true
+
+# MetaTrader5 currently needs NumPy 1.x
+$wine_executable python -m pip install --no-cache-dir "numpy==1.26.4"
+$wine_executable python -m pip install --no-cache-dir "MetaTrader5==$metatrader_version"
+$wine_executable python -m pip install --no-cache-dir \
+  "mt5linux==1.0.3" \
+  "rpyc==5.2.3" \
+  "plumbum==1.7.0" \
+  "pyparsing>=3.1,<4" \
+  python-dateutil
+
+show_message "[6/7] Installing Linux-side bridge libraries..."
 
 python3 -m pip install --break-system-packages --no-cache-dir \
   "mt5linux==1.0.3" \
@@ -119,7 +131,7 @@ python3 -m pip install --break-system-packages --no-cache-dir \
 
 show_message "[7/7] Starting mt5linux server..."
 wine python -m mt5linux --host 0.0.0.0 --port "$mt5server_port" &
-sleep 5
+sleep 10
 
 if ss -tuln | grep ":$mt5server_port" >/dev/null; then
   show_message "[7/7] mt5linux server is running on port $mt5server_port."
